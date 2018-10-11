@@ -99,8 +99,8 @@ class QLearner(object):
     self.env = env
     self.session = session
     self.exploration = exploration
-    self.rew_file = str(uuid.uuid4()) + '.pkl' if rew_file is None else rew_file
-
+    self.rew_file = "explore--1numt.005--"+"DDQN"+ str(uuid.uuid4()) + '.pkl' if rew_file is None else rew_file
+    print("Double Q Learn:", double_q)
     ###############
     # BUILD MODEL #
     ###############
@@ -159,6 +159,37 @@ class QLearner(object):
     ######
 
     # YOUR CODE HERE
+    # Generate q values with given function
+    self.curr_q = q_func(obs_t_float, self.num_actions, scope="q_func", reuse=False)
+    self.targ_q = q_func(obs_tp1_float, self.num_actions, scope="targ_q_func", reuse=False)
+
+
+
+    # Next action is going to be the action that maximizes Q (one hot!)
+    act_t_onehot = tf.one_hot(self.act_t_ph, depth = self.num_actions, dtype = tf.float32)
+    curr_q_t = tf.reduce_sum(tf.multiply(act_t_onehot, self.curr_q),axis=1)
+
+    # make the targets for updating the q network(s)
+    # NOTE: y_i gets r(s_i,a_i) + gamma*max(Q_phi)
+    if double_q:
+        self.curr_q_double = q_func(obs_tp1_float, self.num_actions, scope="q_func", reuse=True)
+
+        act_tp1_ph = tf.argmax(self.curr_q_double,axis=1)
+        # Double Q learning value grab
+        act_t_onehot_double = tf.one_hot(act_tp1_ph, depth = self.num_actions, dtype = tf.float32)
+        # curr_q_t_double = tf.reduce_sum(tf.multiply(act_t_onehot_double, self.curr_q_double),axis=1)
+        # print(tf.argmax(self.curr_q))
+        # print(self.curr_q[tf.argmax(self.curr_q)])
+        target = self.rew_t_ph + gamma*tf.reduce_sum(tf.multiply(act_t_onehot_double, self.targ_q),axis=1)
+    else:
+        target = self.rew_t_ph + gamma*tf.reduce_max(self.targ_q, axis=1)
+
+    # Create variable collections
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars =  tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='targ_q_func')
+
+    # Compile total error
+    self.total_error = tf.reduce_mean(huber_loss(target - curr_q_t))
 
     ######
 
@@ -228,7 +259,43 @@ class QLearner(object):
 
     #####
 
-    # YOUR CODE HERE
+    # Some personal notes
+    # time is self.t
+    # not 100% on how the scheduler works.
+
+    # Check if it's first run (pass 0 reward and false forced)
+    if self.t == 0:
+        act, reward, done = self.env.action_space.sample(), 0, False
+
+    # Store current observation, and (rewardm next obs, and ) into replay buffer
+    idx = self.replay_buffer.store_frame(self.last_obs)
+
+    # Ep greedy, with probability epsilon, choose random action
+    # do I need to check that self.model_initialized is True?
+    if not self.model_initialized or random.uniform(0,1) < self.exploration.value(self.t):
+        # ugh I had this < as a > for so long, so it was almost entirely random :(
+        act = self.env.action_space.sample()
+    else:
+        replay_buffer_batch = self.replay_buffer.encode_recent_observation()
+        q_vals = self.session.run([self.curr_q], feed_dict={self.obs_t_ph: replay_buffer_batch[None, :]})
+        # print(tf.shape(q_vals))
+        # quit()
+        # act = tf.argmax(q_vals).eval()
+        act = np.argmax(q_vals)
+
+    # step simulator one step
+    obs, reward, done, info = self.env.step(act)
+
+    # Store in buffer and update last obs
+    self.replay_buffer.store_effect(idx, act, reward, done)
+    self.last_obs = obs
+
+    # If at end of episode
+    if done:
+        obs = self.env.reset()
+        done = False    # say we did reset
+
+
 
   def update_model(self):
     ### 3. Perform experience replay and train the network.
@@ -238,50 +305,81 @@ class QLearner(object):
     if (self.t > self.learning_starts and \
         self.t % self.learning_freq == 0 and \
         self.replay_buffer.can_sample(self.batch_size)):
-      # Here, you should perform training. Training consists of four steps:
-      # 3.a: use the replay buffer to sample a batch of transitions (see the
-      # replay buffer code for function definition, each batch that you sample
-      # should consist of current observations, current actions, rewards,
-      # next observations, and done indicator).
-      # 3.b: initialize the model if it has not been initialized yet; to do
-      # that, call
-      #    initialize_interdependent_variables(self.session, tf.global_variables(), {
-      #        self.obs_t_ph: obs_t_batch,
-      #        self.obs_tp1_ph: obs_tp1_batch,
-      #    })
-      # where obs_t_batch and obs_tp1_batch are the batches of observations at
-      # the current and next time step. The boolean variable model_initialized
-      # indicates whether or not the model has been initialized.
-      # Remember that you have to update the target network too (see 3.d)!
-      # 3.c: train the model. To do this, you'll need to use the self.train_fn and
-      # self.total_error ops that were created earlier: self.total_error is what you
-      # created to compute the total Bellman error in a batch, and self.train_fn
-      # will actually perform a gradient step and update the network parameters
-      # to reduce total_error. When calling self.session.run on these you'll need to
-      # populate the following placeholders:
-      # self.obs_t_ph
-      # self.act_t_ph
-      # self.rew_t_ph
-      # self.obs_tp1_ph
-      # self.done_mask_ph
-      # (this is needed for computing self.total_error)
-      # self.learning_rate -- you can get this from self.optimizer_spec.lr_schedule.value(t)
-      # (this is needed by the optimizer to choose the learning rate)
-      # 3.d: periodically update the target network by calling
-      # self.session.run(self.update_target_fn)
-      # you should update every target_update_freq steps, and you may find the
-      # variable self.num_param_updates useful for this (it was initialized to 0)
-      #####
+        # Here, you should perform training. Training consists of four steps:
+        # 3.a: use the replay buffer to sample a batch of transitions (see the
+        # replay buffer code for function definition, each batch that you sample
+        # should consist of current observations, current actions, rewards,
+        # next observations, and done indicator).
+        # 3.b: initialize the model if it has not been initialized yet; to do
+        # that, call
+        #    initialize_interdependent_variables(self.session, tf.global_variables(), {
+        #        self.obs_t_ph: obs_t_batch,
+        #        self.obs_tp1_ph: obs_tp1_batch,
+        #    })
+        # where obs_t_batch and obs_tp1_batch are the batches of observations at
+        # the current and next time step. The boolean variable model_initialized
+        # indicates whether or not the model has been initialized.
+        # Remember that you have to update the target network too (see 3.d)!
+        # 3.c: train the model. To do this, you'll need to use the self.train_fn and
+        # self.total_error ops that were created earlier: self.total_error is what you
+        # created to compute the total Bellman error in a batch, and self.train_fn
+        # will actually perform a gradient step and update the network parameters
+        # to reduce total_error. When calling self.session.run on these you'll need to
+        # populate the following placeholders:
+        # self.obs_t_ph
+        # self.act_t_ph
+        # self.rew_t_ph
+        # self.obs_tp1_ph
+        # self.done_mask_ph
+        # (this is needed for computing self.total_error)
+        # self.learning_rate -- you can get this from self.optimizer_spec.lr_schedule.value(t)
+        # (this is needed by the optimizer to choose the learning rate)
+        # 3.d: periodically update the target network by calling
+        # self.session.run(self.update_target_fn)
+        # you should update every target_update_freq steps, and you may find the
+        # variable self.num_param_updates useful for this (it was initialized to 0)
+        #####
 
-      # YOUR CODE HERE
+        # YOUR CODE HERE
 
-      self.num_param_updates += 1
+        # 3.a
+        if self.replay_buffer.can_sample(self.batch_size):
+          obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = self.replay_buffer.sample(self.batch_size)
+
+        # 3.b
+        if not self.model_initialized:
+          initialize_interdependent_variables(self.session, tf.global_variables(), {
+                 self.obs_t_ph: obs_batch,
+                 self.obs_tp1_ph: next_obs_batch})   # tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+          # Need to init target network too
+          # Flag so that it's been init
+          self.session.run(self.update_target_fn) # changed from self.update_target_fn recently
+          self.model_initialized = True
+
+        # 3.c: train the model.
+
+        # run the session
+        # print(act_batch)
+        self.session.run([self.total_error, self.train_fn], feed_dict={
+            self.obs_t_ph: obs_batch,
+            self.act_t_ph: act_batch,
+            self.rew_t_ph: rew_batch,
+            self.obs_tp1_ph: next_obs_batch,
+            self.done_mask_ph: done_mask,
+            self.learning_rate: self.optimizer_spec.lr_schedule.value(self.t)
+        })
+
+        # 3.d: periodicially update target Network
+        if (self.num_param_updates % self.target_update_freq == 0):
+          self.session.run(self.update_target_fn)
+
+        ##
+        self.num_param_updates += 1
 
     self.t += 1
 
   def log_progress(self):
     episode_rewards = get_wrapper_by_name(self.env, "Monitor").get_episode_rewards()
-
     if len(episode_rewards) > 0:
       self.mean_episode_reward = np.mean(episode_rewards[-100:])
 
@@ -298,12 +396,19 @@ class QLearner(object):
       if self.start_time is not None:
         print("running time %f" % ((time.time() - self.start_time) / 60.))
 
+      # for my plotting
+      if False:
+        print("ep reward shape:", np.shape(episode_rewards))
+        print("mean reward shape:", np.shape(self.mean_episode_reward))
+        print("best mean reward shape:", np.shape(self.best_mean_episode_reward))
+
       self.start_time = time.time()
 
       sys.stdout.flush()
 
-      with open(self.rew_file, 'wb') as f:
-        pickle.dump(episode_rewards, f, pickle.HIGHEST_PROTOCOL)
+      with open(self.rew_file, 'ab') as f:
+        # pickle.dump(episode_rewards, f, pickle.HIGHEST_PROTOCOL)
+        pickle.dump((self.mean_episode_reward, self.best_mean_episode_reward, self.t), f, pickle.HIGHEST_PROTOCOL)
 
 def learn(*args, **kwargs):
   alg = QLearner(*args, **kwargs)
@@ -314,4 +419,3 @@ def learn(*args, **kwargs):
     # observation
     alg.update_model()
     alg.log_progress()
-

@@ -38,8 +38,8 @@ def lander_exploration_schedule(num_timesteps):
     return PiecewiseSchedule(
         [
             (0, 1),
-            (num_timesteps * 0.1, 0.02),
-        ], outside_value=0.02
+            (num_timesteps * 1, 0.005),
+        ], outside_value=0.005
     )
 
 def lander_kwargs():
@@ -71,7 +71,7 @@ def lander_learn(env,
         session=session,
         exploration=lander_exploration_schedule(num_timesteps),
         stopping_criterion=lander_stopping_criterion(num_timesteps),
-        double_q=True,
+        double_q=True,     # changed from True
         **lander_kwargs()
     )
     env.close()
@@ -99,13 +99,13 @@ def get_env(seed):
     env.seed(seed)
 
     expt_dir = '/tmp/hw3_vid_dir/'
-    env = wrappers.Monitor(env, osp.join(expt_dir, "gym"), force=True)
+    env = wrappers.Monitor(env, osp.join(expt_dir, "gym"), force=True, video_callable=False)
 
     return env
 
 def main():
     # Run training
-    seed = 4565 # you may want to randomize this
+    seed = 86252 #3349 #random.randint(1, 10000) #4565 # you may want to randomize this 86252
     print('random seed = %d' % seed)
     env = get_env(seed)
     session = get_session()
