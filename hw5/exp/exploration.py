@@ -40,9 +40,9 @@ class Exploration(object):
                 bonus and then modify the rewards with the bonus
                 and store that in new_rewards, which you will return
         """
-        raise NotImplementedError
-        bonus = None
-        new_rewards = None
+
+        bonus = self.compute_reward_bonus(states)
+        new_rewards = rewards+self.bonus_coeff*bonus
         return new_rewards
 
 class DiscreteExploration(Exploration):
@@ -57,7 +57,8 @@ class DiscreteExploration(Exploration):
             args:
                 states: (bsize, ob_dim)
         """
-        raise NotImplementedError
+        for state in states:
+            self.density_model.update_count(state, 1)
 
     def bonus_function(self, count):
         """
@@ -67,7 +68,8 @@ class DiscreteExploration(Exploration):
             args:
                 count: np array (bsize)
         """
-        raise NotImplementedError
+        bonus = 1/np.sqrt(count)
+        return bonus
 
     def compute_reward_bonus(self, states):
         """
@@ -77,8 +79,8 @@ class DiscreteExploration(Exploration):
             args:
                 states: (bsize, ob_dim)
         """
-        count = raise NotImplementedError
-        bonus = raise NotImplementedError
+        count = self.density_model.get_count(states)
+        bonus = self.bonus_function(count)
         return bonus
 
 
@@ -99,19 +101,18 @@ class ContinuousExploration(Exploration):
             args:
                 prob: np array (bsize,)
         """
-        raise NotImplementedError
+        return -np.log(prob)
 
     def compute_reward_bonus(self, states):
         """
             ### PROBLEM 2
             ### YOUR CODE HERE
-        
+
             args:
                 states: (bsize, ob_dim)
         """
-        raise NotImplementedError
-        prob = None
-        bonus = None
+        prob = self.density_model.get_prob(states)
+        bonus = self.bonus_function(prob)
         return bonus
 
 
@@ -132,7 +133,7 @@ class ExemplarExploration(ContinuousExploration):
     def __init__(self, density_model, bonus_coeff, train_iters, bsize, replay_size):
         super(ExemplarExploration, self).__init__(density_model, bonus_coeff, replay_size)
         self.train_iters = train_iters
-        self.bsize = bsize   
+        self.bsize = bsize
 
     def sample_idxs(self, states, batch_size):
         states = copy.deepcopy(states)
